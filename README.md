@@ -73,8 +73,6 @@ All sensitive operations are performed in memory or with temporary files that ar
 
 ![Builder GUI](https://cdn.discordapp.com/attachments/1503386227485966389/1503413141189427240/image.png?ex=6a034218&is=6a01f098&hm=87f200c7ac6b2d84f0d918190522aee97aca1148c65c773920cb29da9908729c&)
 
-*(Concept – your actual GUI will look similar with dark theme & neon accents)*
-
 ---
 
 ## 📜 License & Disclaimer
